@@ -1,93 +1,84 @@
-import os
 import streamlit as st
 import google.generativeai as genai
 from openai import OpenAI
 import json
+import time
 
-# --- API CLIENT SETUP ---
-def get_gemini_response(prompt):
-    """System 1 & 2 Implementation using Gemini Direct"""
+# --- 2026 RESILIENT MODEL LIST ---
+# These models are current leaders in free-tier stability and JSON accuracy
+MODEL_FALLBACK_LIST = [
+    "gemini-direct", # Direct Google API
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemini-2.0-flash-exp:free",
+    "qwen/qwen-2.5-72b-instruct:free",
+    "mistralai/mistral-small-24b-instruct-2501:free"
+]
+
+def call_llm_provider(prompt, model_id):
+    """Routes the request to either Gemini Direct or OpenRouter"""
     try:
-        if "GEMINI_API_KEY" not in st.secrets:
-            return "ERROR: GEMINI_API_KEY missing in Streamlit Secrets"
-            
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
-        return response.text
+        if model_id == "gemini-direct":
+            if "GEMINI_API_KEY" not in st.secrets: return "ERR_KEY_MISSING"
+            genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            return model.generate_content(prompt).text
+        else:
+            if "OPENROUTER_API_KEY" not in st.secrets: return "ERR_KEY_MISSING"
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=st.secrets["OPENROUTER_API_KEY"],
+            )
+            completion = client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={ "type": "json_object" } # Requesting structured output
+            )
+            return completion.choices[0].message.content
     except Exception as e:
-        return f"GEMINI_SYSTEM_ERROR: {str(e)}"
+        return f"API_ERROR: {str(e)}"
 
-def get_openrouter_response(prompt):
-    """Fail-safe Implementation using OpenRouter"""
-    try:
-        if "OPENROUTER_API_KEY" not in st.secrets:
-            return "ERROR: OPENROUTER_API_KEY missing in Streamlit Secrets"
-
-        client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=st.secrets["OPENROUTER_API_KEY"],
-        )
-        
-        # Using a more reliable free model identifier
-        completion = client.chat.completions.create(
-            model="google/gemini-2.0-flash-exp:free", 
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return completion.choices[0].message.content
-    except Exception as e:
-        return f"OPENROUTER_SYSTEM_ERROR: {str(e)}"
-
-# --- CORE LOGIC: THE TWO SYSTEMS ---
-
-def fetch_and_verify_questions(mode, language, count, **kwargs):
-    # Construct details
-    details = f"Subject: {kwargs.get('subject')}, Topic: {kwargs.get('topic', 'General')}"
-    if mode == "pyq":
-        details += f", Year: {kwargs.get('year')}"
-    else:
-        details += f", Subtopic: {kwargs.get('subtopic', 'General')}"
-
-    sys1_prompt = f"""
-    Act as a UPSC Prelims Question Expert. 
-    Generate {count} MCQs for {mode.upper()}.
-    Details: {details}.
-    Language: {language}.
-    Format: JSON array of objects with keys: id, question, options (list of 4), answer (A, B, C, or D), explanation.
-    Strictly UPSC standard.
+def fetch_and_verify_questions(mode, language, count, subject, topic):
+    """Main function that cycles through models until it gets a valid UPSC quiz"""
+    
+    prompt = f"""
+    Act as a UPSC Prelims Examiner. 
+    Generate {count} MCQs for {mode.upper()} mode.
+    Subject: {subject}
+    Topic: {topic}
+    Language: {language}
+    
+    Output: Return ONLY a JSON array of objects. 
+    Keys: "id", "question", "options" (list of 4), "answer" (Letter A, B, C, or D), "explanation".
+    Ensure UPSC standard difficulty and clear {language} phrasing.
     """
-    
-    # --- TRY SYSTEM 1 ---
-    st.write(f"🔄 System 1: Fetching {mode} questions...")
-    raw_data = get_gemini_response(sys1_prompt)
-    
-    if "ERROR" in raw_data:
-        st.warning("Gemini Primary failed. Trying OpenRouter Fallback...")
-        raw_data = get_openrouter_response(sys1_prompt)
-    
-    if "ERROR" in raw_data:
-        return f"Critical Failure: Both APIs failed to generate questions. Detail: {raw_data}"
 
-    # --- TRY SYSTEM 2 ---
-    st.write("✅ System 1 complete. 🔄 System 2: Verifying data...")
-    sys2_prompt = f"Verify this UPSC JSON data for accuracy and {language} language. Return ONLY valid JSON: {raw_data}"
+    final_data = None
     
-    verified_data = get_gemini_response(sys2_prompt)
-    if "ERROR" in verified_data:
-        verified_data = get_openrouter_response(sys2_prompt)
-        
-    # If verifier fails, try to use raw data anyway so the user gets something
-    if "ERROR" in verified_data:
-        st.warning("Verification failed, attempting to parse raw data...")
-        return clean_json(raw_data)
+    # --- AUTOMATIC FAILOVER LOOP ---
+    for model in MODEL_FALLBACK_LIST:
+        with st.status(f"📡 Fetching questions (Source: {model.split('/')[-1]})..."):
+            raw_response = call_llm_provider(prompt, model)
+            
+            if raw_response and "API_ERROR" not in raw_response:
+                parsed = clean_and_parse(raw_response)
+                if parsed: # If JSON is valid
+                    final_data = parsed
+                    break
+            
+            st.toast(f"Model {model} busy. Trying backup...", icon="🔄")
+            time.sleep(1) 
 
-    return clean_json(verified_data)
+    if not final_data:
+        return "CRITICAL: All AI services are currently occupied. Please try again in 30 seconds."
 
-def clean_json(text):
+    return final_data
+
+def clean_and_parse(text):
+    """Strips Markdown and parses text into Python list"""
     try:
-        # Strip code blocks if present
-        text = text.replace("```json", "").replace("```", "").strip()
+        # Remove markdown code blocks if present
+        if "```" in text:
+            text = text.split("```json")[-1].split("```")[0].strip()
         return json.loads(text)
-    except Exception as e:
-        st.error("JSON Structure Error")
-        return []
+    except:
+        return None
