@@ -6,112 +6,88 @@ import json
 
 # --- API CLIENT SETUP ---
 def get_gemini_response(prompt):
-    """System 1 & 2 Implementation using Gemini"""
+    """System 1 & 2 Implementation using Gemini Direct"""
     try:
-        # Check if key exists
         if "GEMINI_API_KEY" not in st.secrets:
-            return "Error: GEMINI_API_KEY not found in secrets."
-
+            return "ERROR: GEMINI_API_KEY missing in Streamlit Secrets"
+            
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"GEMINI ERROR: {str(e)}"
+        return f"GEMINI_SYSTEM_ERROR: {str(e)}"
 
 def get_openrouter_response(prompt):
     """Fail-safe Implementation using OpenRouter"""
     try:
-        # Check if key exists
         if "OPENROUTER_API_KEY" not in st.secrets:
-            return "Error: OPENROUTER_API_KEY not found in secrets."
+            return "ERROR: OPENROUTER_API_KEY missing in Streamlit Secrets"
 
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=st.secrets["OPENROUTER_API_KEY"],
         )
-        # Trying a broader model list for stability
+        
+        # Using a more reliable free model identifier
         completion = client.chat.completions.create(
-            model="meta-llama/llama-3-8b-instruct:free",
+            model="google/gemini-2.0-flash-exp:free", 
             messages=[{"role": "user", "content": prompt}]
         )
         return completion.choices[0].message.content
     except Exception as e:
-        return f"OPENROUTER ERROR: {str(e)}"
+        return f"OPENROUTER_SYSTEM_ERROR: {str(e)}"
 
 # --- CORE LOGIC: THE TWO SYSTEMS ---
 
 def fetch_and_verify_questions(mode, language, count, **kwargs):
-    
-    # Construct details based on mode
+    # Construct details
+    details = f"Subject: {kwargs.get('subject')}, Topic: {kwargs.get('topic', 'General')}"
     if mode == "pyq":
-        details = f"Year: {kwargs.get('year')}, Subject: {kwargs.get('subject')}, Topic: {kwargs.get('topic', 'Any')}"
-    else: # Quiz mode
-        details = f"Subject: {kwargs.get('subject')}, Topic: {kwargs.get('topic')}, Subtopic: {kwargs.get('subtopic', 'Any')}"
+        details += f", Year: {kwargs.get('year')}"
+    else:
+        details += f", Subtopic: {kwargs.get('subtopic', 'General')}"
 
-    # --- SYSTEM 1: GENERATOR ---
     sys1_prompt = f"""
-    Act as a UPSC Prelims Question Database. 
-    Task: Fetch/Generate {count} distinct multiple-choice questions (MCQs).
-    Mode: {mode.upper()}
-    Details: {details}
-    Language: {language}
-    
-    Output Format: JSON only. Array of objects with keys: 'id', 'question', 'options' (list of A,B,C,D), 'answer' (correct option letter), 'explanation'.
-    Ensure questions are strictly relevant to UPSC standards.
+    Act as a UPSC Prelims Question Expert. 
+    Generate {count} MCQs for {mode.upper()}.
+    Details: {details}.
+    Language: {language}.
+    Format: JSON array of objects with keys: id, question, options (list of 4), answer (A, B, C, or D), explanation.
+    Strictly UPSC standard.
     """
     
-    st.write("🔄 Attempting System 1 (Generator)...") # Debug UI Log
+    # --- TRY SYSTEM 1 ---
+    st.write(f"🔄 System 1: Fetching {mode} questions...")
     raw_data = get_gemini_response(sys1_prompt)
     
-    # Check if Gemini failed (if result starts with error or is None)
-    if not raw_data or "ERROR" in raw_data:
-        st.warning(f"System 1 Gemini Failed: {raw_data}") # Show error to user
-        st.write("⚠️ Switching to OpenRouter Fallback...")
+    if "ERROR" in raw_data:
+        st.warning("Gemini Primary failed. Trying OpenRouter Fallback...")
         raw_data = get_openrouter_response(sys1_prompt)
-        
-    if not raw_data or "ERROR" in raw_data:
-        return f"CRITICAL FAILURE: Both APIs failed.\nGemini: {raw_data}\nOpenRouter: {raw_data}"
+    
+    if "ERROR" in raw_data:
+        return f"Critical Failure: Both APIs failed to generate questions. Detail: {raw_data}"
 
-    # --- SYSTEM 2: VERIFIER ---
-    sys2_prompt = f"""
-    Act as a Senior UPSC Content Reviewer. 
-    Task: Review the following JSON data of quiz questions.
-    1. Check for factual accuracy.
-    2. Ensure the language is strictly {language}.
-    3. Verify the correct answer matches the explanation.
-    4. Remove any markdown formatting (like ```json).
+    # --- TRY SYSTEM 2 ---
+    st.write("✅ System 1 complete. 🔄 System 2: Verifying data...")
+    sys2_prompt = f"Verify this UPSC JSON data for accuracy and {language} language. Return ONLY valid JSON: {raw_data}"
     
-    Input JSON:
-    {raw_data}
-    
-    Output Format: Return ONLY the cleaned, verified JSON string. No extra text.
-    """
-    
-    st.write("✅ System 1 Done. 🔄 Attempting System 2 (Verifier)...") # Debug UI Log
     verified_data = get_gemini_response(sys2_prompt)
-    
-    if not verified_data or "ERROR" in verified_data:
-        st.warning(f"System 2 Gemini Failed: {verified_data}")
+    if "ERROR" in verified_data:
         verified_data = get_openrouter_response(sys2_prompt)
         
-    if not verified_data or "ERROR" in verified_data:
-         # If verifier fails, try to return raw data as last resort
-        return clean_json(raw_data) 
+    # If verifier fails, try to use raw data anyway so the user gets something
+    if "ERROR" in verified_data:
+        st.warning("Verification failed, attempting to parse raw data...")
+        return clean_json(raw_data)
 
     return clean_json(verified_data)
 
 def clean_json(text):
-    """Helper to strip markdown and parse JSON"""
     try:
-        # Clean potential error messages if they leaked into text
-        if "ERROR" in text:
-            return [{"question": "API Error", "options": ["Error"], "answer": "A", "explanation": text}]
-            
+        # Strip code blocks if present
         text = text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
     except Exception as e:
-        st.error(f"JSON Parsing Error: {e}")
-        st.text("Raw Output that failed to parse:")
-        st.code(text)
+        st.error("JSON Structure Error")
         return []
