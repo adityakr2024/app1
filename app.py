@@ -1,98 +1,150 @@
 import streamlit as st
-import utils
+import utils # Ensure utils.py is in the same GitHub folder
+import time
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="UPSC AI Quiz Master", page_icon="🏛️", layout="wide")
+# --- 1. SETUP & CONFIG ---
+st.set_page_config(page_title="UPSC Prep AI", page_icon="🏛️", layout="wide")
 
-# --- CUSTOM CSS ---
-st.markdown("""
-    <style>
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
-    .question-box { background-color: #f0f2f6; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-    </style>
-""", unsafe_allow_html=True)
+# Initialize Session States
+if "page" not in st.session_state:
+    st.session_state.page = "home"
+if "language" not in st.session_state:
+    st.session_state.language = "English"
+if "quiz_data" not in st.session_state:
+    st.session_state.quiz_data = None
 
-# --- SESSION STATE ---
-if "quiz_data" not in st.session_state: st.session_state.quiz_data = None
-if "current_q" not in st.session_state: st.session_state.current_q = 0
-if "score" not in st.session_state: st.session_state.score = 0
+# --- 2. LANGUAGE TRANSLATIONS ---
+TRANS = {
+    "English": {
+        "title": "UPSC Aspirant AI",
+        "home_tag": "Master UPSC Prelims with AI-Verified Practice",
+        "btn_pyq": "Previous Year Questions (PYQ)",
+        "btn_quiz": "Take a Custom Quiz",
+        "settings": "Settings",
+        "lang_label": "Choose Language",
+        "generate": "Generate Questions",
+        "back": "Back to Home",
+        "sub": "Subject",
+        "top": "Topic",
+        "stop": "Sub-topic",
+        "year": "Exam Year",
+        "q_count": "Number of Questions",
+        "wait": "AI is fetching and verifying questions..."
+    },
+    "Hindi": {
+        "title": "UPSC एस्पिरेंट AI",
+        "home_tag": "AI-सत्यापित अभ्यास के साथ UPSC प्रीलिम्स में महारत हासिल करें",
+        "btn_pyq": "पिछले वर्ष के प्रश्न (PYQ)",
+        "btn_quiz": "कस्टम क्विज़ लें",
+        "settings": "सेटिंग्स",
+        "lang_label": "भाषा चुनें",
+        "generate": "प्रश्न तैयार करें",
+        "back": "होम पर वापस जाएं",
+        "sub": "विषय",
+        "top": "विषय (Topic)",
+        "stop": "उप-विषय (Sub-topic)",
+        "year": "परीक्षा का वर्ष",
+        "q_count": "प्रश्नों की संख्या",
+        "wait": "AI प्रश्न खोज और सत्यापित कर रहा है..."
+    }
+}
 
-# --- SIDEBAR ---
+# Current translation dictionary
+t = TRANS[st.session_state.language]
+
+# --- 3. SIDEBAR NAVIGATION ---
 with st.sidebar:
-    st.image("[https://upload.wikimedia.org/wikipedia/commons/e/e4/Seal_of_the_UPSC.png](https://upload.wikimedia.org/wikipedia/commons/e/e4/Seal_of_the_UPSC.png)", width=100)
-    st.title("UPSC Prelims 2026")
-    st.divider()
+    st.header(f"⚙️ {t['settings']}")
     
-    mode = st.radio("Quiz Mode", ["Practice", "Previous Year (PYQ)"])
-    lang = st.selectbox("Language", ["English", "Hindi"])
-    q_count = st.slider("Number of Questions", 5, 20, 10)
+    # Language Toggle (Available at any time)
+    new_lang = st.radio(t['lang_label'], ["English", "Hindi"], 
+                        index=0 if st.session_state.language == "English" else 1)
     
-    if st.button("🔄 Reset Quiz"):
-        st.session_state.quiz_data = None
-        st.session_state.current_q = 0
-        st.session_state.score = 0
+    if new_lang != st.session_state.language:
+        st.session_state.language = new_lang
         st.rerun()
 
-# --- MAIN UI ---
-st.header("🏛️ UPSC AI Question Generator")
+    st.divider()
+    if st.button(f"🏠 {t['back']}", use_container_width=True):
+        st.session_state.page = "home"
+        st.session_state.quiz_data = None
+        st.rerun()
 
-if st.session_state.quiz_data is None:
-    # INPUT SECTION
+# --- 4. PAGE: HOME ---
+if st.session_state.page == "home":
+    st.title(f"🏛️ {t['title']}")
+    st.subheader(t['home_tag'])
+    
+    st.markdown("---")
     col1, col2 = st.columns(2)
+    
     with col1:
-        subject = st.text_input("Subject", placeholder="e.g., Indian Polity, Economy")
-    with col2:
-        topic = st.text_input("Topic", placeholder="e.g., Fundamental Rights, Inflation")
-    
-    if st.button("✨ Generate My Quiz"):
-        if subject and topic:
-            result = utils.fetch_and_verify_questions(mode, lang, q_count, subject, topic)
-            if isinstance(result, str): # Error message
-                st.error(result)
-            else:
-                st.session_state.quiz_data = result
-                st.rerun()
-        else:
-            st.warning("Please enter both Subject and Topic to continue.")
-
-else:
-    # QUIZ SECTION
-    data = st.session_state.quiz_data
-    curr = st.session_state.current_q
-    
-    if curr < len(data):
-        q = data[curr]
-        st.progress((curr) / len(data))
-        st.subheader(f"Question {curr + 1} of {len(data)}")
-        
-        with st.container():
-            st.markdown(f"**{q['question']}**")
-            
-            # Show options as buttons or radio
-            choice = st.radio("Select your answer:", q['options'], key=f"q_{curr}")
-            
-            if st.button("Submit Answer"):
-                correct_ans = q['answer'] # A, B, C, or D
-                # Find the text of the correct option
-                idx = ord(correct_ans) - ord('A')
-                
-                if choice == q['options'][idx]:
-                    st.success("🎯 Correct!")
-                    st.session_state.score += 1
-                else:
-                    st.error(f"❌ Incorrect. The correct answer was ({correct_ans})")
-                
-                with st.expander("See Explanation"):
-                    st.write(q['explanation'])
-                
-                if st.button("Next Question ➡️"):
-                    st.session_state.current_q += 1
-                    st.rerun()
-    else:
-        # RESULTS SECTION
-        st.balloons()
-        st.success(f"### Quiz Completed! 🎉")
-        st.metric("Final Score", f"{st.session_state.score} / {len(data)}")
-        if st.button("Try Another Quiz"):
-            st.session_state.quiz_data = None
+        st.info("📊 **PYQ Section**\n\nFilter by year and subject to practice actual UPSC questions.")
+        if st.button(t['btn_pyq'], type="primary", use_container_width=True):
+            st.session_state.page = "pyq"
             st.rerun()
+            
+    with col2:
+        st.success("🎯 **Quiz Section**\n\nGenerate dynamic questions for specific topics and subtopics.")
+        if st.button(t['btn_quiz'], type="primary", use_container_width=True):
+            st.session_state.page = "quiz"
+            st.rerun()
+
+# --- 5. PAGE: PYQ / QUIZ GENERATION ---
+elif st.session_state.page in ["pyq", "quiz"]:
+    mode = st.session_state.page
+    st.title(t['btn_pyq'] if mode == "pyq" else t['btn_quiz'])
+    
+    with st.container(border=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            subject = st.selectbox(t['sub'], ["History", "Geography", "Polity", "Economy", "Environment", "Science", "Current Affairs"])
+            topic = st.text_input(t['top'] + " (Optional)", placeholder="e.g., Buddhism, Preamble")
+        
+        with c2:
+            if mode == "pyq":
+                year = st.selectbox(t['year'], [str(y) for y in range(2024, 2010, -1)])
+                subtopic = ""
+            else:
+                subtopic = st.text_input(t['stop'] + " (Optional)")
+                year = ""
+            
+            num_q = st.slider(t['q_count'], 5, 20, 5)
+
+        if st.button(t['generate'], use_container_width=True):
+            with st.spinner(t['wait']):
+                # Calls the 2-system logic in utils.py
+                result = utils.fetch_and_verify_questions(
+                    mode=mode,
+                    language=st.session_state.language,
+                    count=num_q,
+                    subject=subject,
+                    topic=topic,
+                    subtopic=subtopic,
+                    year=year
+                )
+                st.session_state.quiz_data = result
+                st.session_state.current_q = 0
+
+    # --- 6. DISPLAYING THE QUIZ ---
+    if st.session_state.quiz_data:
+        st.divider()
+        questions = st.session_state.quiz_data
+        
+        if isinstance(questions, str):
+            st.error(questions) # Error from API
+        else:
+            for i, q in enumerate(questions):
+                st.markdown(f"### Q{i+1}. {q['question']}")
+                # Unique key prevents widget overlap
+                ans = st.radio("Options:", q['options'], key=f"q_{mode}_{i}")
+                
+                with st.expander("Check Answer & Explanation"):
+                    # Basic verification: Checking if the selected text matches index of correct answer
+                    correct_idx = ord(q['answer']) - ord('A') # A=0, B=1...
+                    if ans == q['options'][correct_idx]:
+                        st.success(f"Correct! (Answer: {q['answer']})")
+                    else:
+                        st.error(f"Incorrect. Correct Answer: {q['answer']}")
+                    st.write(f"**Explanation:** {q['explanation']}")
+                st.divider()
