@@ -37,21 +37,29 @@ def call_llm_provider(prompt, model_id):
     except Exception as e:
         return f"API_ERROR: {str(e)}"
 
-def fetch_and_verify_questions(mode, language, count, subject, topic):
-    """Main function that cycles through models until it gets a valid UPSC quiz"""
+# New version (fixes error)
+def fetch_and_verify_questions(mode, language, count, subject, topic, **kwargs):
     
+    # We can now use the extra data from kwargs
+    year = kwargs.get('year', '')
+    subtopic = kwargs.get('subtopic', '')
+    
+    # Update the prompt to include these details for better questions
+    details = f"Subject: {subject}, Topic: {topic}"
+    if year: details += f", Year: {year}"
+    if subtopic: details += f", Subtopic: {subtopic}"
+
     prompt = f"""
     Act as a UPSC Prelims Examiner. 
     Generate {count} MCQs for {mode.upper()} mode.
-    Subject: {subject}
-    Topic: {topic}
+    Details: {details}
     Language: {language}
     
     Output: Return ONLY a JSON array of objects. 
     Keys: "id", "question", "options" (list of 4), "answer" (Letter A, B, C, or D), "explanation".
-    Ensure UPSC standard difficulty and clear {language} phrasing.
     """
-
+    
+    # ... rest of your existing function code ...
     final_data = None
     
     # --- AUTOMATIC FAILOVER LOOP ---
